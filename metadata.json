@@ -1,0 +1,8 @@
+{
+  "name": "Recall Aid",
+  "description": "An intelligent cognitive prosthetic that observes your environment and provides gentle, proactive audio nudges using Gemini 2.5.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

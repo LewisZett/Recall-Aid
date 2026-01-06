@@ -1,0 +1,288 @@
+<div class="flex h-full w-full bg-black relative font-mono">
+  
+  <!-- Left Side: Visual Feed -->
+  <div class="w-full lg:w-2/3 relative h-full flex items-center justify-center bg-gray-900 overflow-hidden">
+    
+    <!-- Camera Feed -->
+    <video #videoElement autoplay playsinline muted 
+           class="w-full h-full object-cover opacity-80"
+           [class.grayscale]="!isActive()"></video>
+    
+    <!-- Canvas for capture (hidden) -->
+    <canvas #canvasElement class="hidden"></canvas>
+
+    <!-- CRT Overlay Effects -->
+    <div class="absolute inset-0 pointer-events-none crt-overlay"></div>
+    @if (isActive()) {
+      <div class="scanline"></div>
+    }
+
+    <!-- Status HUD -->
+    <div class="absolute top-6 left-6 flex flex-col gap-2 z-20">
+      <div class="flex items-center gap-3 bg-black/60 backdrop-blur-md px-4 py-2 rounded-lg border border-gray-700">
+        <div class="w-3 h-3 rounded-full" 
+             [class.bg-red-500]="!isActive()"
+             [class.bg-green-500]="isActive() && !isLoopPaused() && !isReasoning() && !voiceService.isListening() && !ttsService.isSpeaking() && !voiceService.isProcessing()"
+             [class.bg-amber-500]="isLoopPaused()"
+             [class.bg-purple-500]="isReasoning() || voiceService.isProcessing()"
+             [class.bg-red-600]="voiceService.isListening()"
+             [class.bg-cyan-400]="ttsService.isSpeaking()"
+             [class.animate-pulse]="isActive() && !isLoopPaused()">
+        </div>
+        <span class="text-sm font-bold tracking-widest uppercase text-white">
+          @if (!isActive()) { OFFLINE }
+          @else if (voiceService.isProcessing()) { PROCESSING... }
+          @else if (voiceService.isListening()) { LISTENING... }
+          @else if (ttsService.isSpeaking()) { SPEAKING... }
+          @else if (isLoopPaused()) { PAUSED }
+          @else if (isReasoning()) { REASONING (DEEP THINK) }
+          @else if (isObserving()) { OBSERVING }
+          @else { MONITORING }
+        </span>
+      </div>
+
+      @if (isActive()) {
+        <div class="flex items-center gap-2 bg-black/60 backdrop-blur-md px-4 py-2 rounded-lg border border-gray-700">
+           <span class="text-xs text-gray-400 uppercase">Observer Confidence</span>
+           <div class="w-24 h-2 bg-gray-700 rounded-full overflow-hidden">
+             <div class="h-full bg-emerald-500 transition-all duration-500" [style.width.%]="confidenceLevel()"></div>
+           </div>
+           <span class="text-xs text-emerald-400">{{ confidenceLevel() }}%</span>
+        </div>
+
+        <div class="flex items-center gap-2 bg-black/60 backdrop-blur-md px-4 py-2 rounded-lg border border-gray-700">
+          <span class="text-xs text-gray-400 uppercase">Audio Level</span>
+          <div class="flex gap-0.5 items-end h-3">
+             @for (bar of [1,2,3,4,5]; track bar) {
+                <div class="w-1.5 bg-gray-600 rounded-sm transition-all duration-75"
+                     [class.bg-blue-400]="audioService.audioLevel() > (bar * 15)"
+                     [style.height.%]="audioService.audioLevel() > (bar * 15) ? 100 : 30">
+                </div>
+             }
+          </div>
+       </div>
+
+        <div class="flex items-center gap-2 bg-black/60 backdrop-blur-md px-4 py-2 rounded-lg border border-gray-700">
+           <span class="text-xs text-gray-400 uppercase">Scan Rate</span>
+           <span class="text-xs font-bold" [class.text-amber-400]="loopIntervalMs() < 5000" [class.text-blue-400]="loopIntervalMs() >= 5000">
+             {{ loopIntervalMs() / 1000 }}s
+           </span>
+        </div>
+      }
+    </div>
+
+    <!-- Interactive Voice Button -->
+    <div class="absolute bottom-10 left-1/2 transform -translate-x-1/2 z-30 flex flex-col items-center gap-4 w-full px-4">
+      
+      <!-- Nudge Display (Above button) -->
+      @if (isActive() && lastNudge()) {
+        <div class="bg-black/80 backdrop-blur-xl border border-purple-500/50 p-4 md:p-6 rounded-2xl shadow-2xl shadow-purple-900/20 animate-fade-in-up w-[90vw] max-w-md text-center mb-2 transition-all duration-300 mx-auto"
+             [class.border-cyan-400]="ttsService.isSpeaking()"
+             [class.shadow-cyan-900]="ttsService.isSpeaking()">
+           <p class="text-purple-300 text-[10px] md:text-xs uppercase tracking-widest mb-2">Recall Aid Suggested</p>
+           <h2 class="text-lg md:text-xl text-white font-medium leading-relaxed break-words" 
+               [class.animate-pulse]="ttsService.isSpeaking()">"{{ lastNudge() }}"</h2>
+        </div>
+      }
+
+      <!-- Error Display -->
+      @if (voiceService.error()) {
+        <div class="bg-red-500/90 text-white px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wide shadow-lg animate-fade-in-up border border-red-400 backdrop-blur-sm">
+          {{ voiceService.error() }}
+        </div>
+      }
+
+      <button (click)="toggleVoice()"
+              class="relative group transition-all duration-300 transform active:scale-95 outline-none focus:outline-none shrink-0">
+        
+        <!-- Processing Pulse -->
+        @if (voiceService.isProcessing()) {
+           <span class="absolute inset-0 rounded-full bg-amber-500 opacity-75 animate-ping"></span>
+        }
+
+        <!-- Listening Pulse -->
+        @if (voiceService.isListening() && !voiceService.isProcessing()) {
+          <span class="absolute inset-0 rounded-full bg-red-500 opacity-75 animate-ping"></span>
+          <span class="absolute -inset-1 rounded-full border border-red-500 opacity-50 animate-pulse"></span>
+        }
+        
+        <!-- Speaking Pulse -->
+        @if (ttsService.isSpeaking()) {
+           <span class="absolute inset-0 rounded-full bg-cyan-500 opacity-40 animate-ping" style="animation-duration: 1.5s"></span>
+           <span class="absolute -inset-2 rounded-full border border-cyan-400 opacity-30 animate-pulse"></span>
+        }
+
+        <!-- Error Glow -->
+        @if (voiceService.error()) {
+           <span class="absolute -inset-1 rounded-full border-2 border-red-500 opacity-100 animate-pulse"></span>
+        }
+
+        <div class="w-16 h-16 rounded-full flex items-center justify-center border-2 shadow-lg backdrop-blur-sm transition-all duration-300 z-10 relative overflow-hidden"
+             [class.bg-red-600]="voiceService.isListening()"
+             [class.border-red-400]="voiceService.isListening()"
+             [class.shadow-red-900]="voiceService.isListening()"
+             
+             [class.bg-amber-600]="voiceService.isProcessing()"
+             [class.border-amber-400]="voiceService.isProcessing()"
+             
+             [class.bg-cyan-900]="ttsService.isSpeaking()"
+             [class.border-cyan-400]="ttsService.isSpeaking()"
+             [class.shadow-cyan-500]="ttsService.isSpeaking()"
+
+             [class.bg-black-60]="!voiceService.isListening() && !ttsService.isSpeaking() && !voiceService.isProcessing()"
+             [class.border-white]="!voiceService.isListening() && !ttsService.isSpeaking() && !voiceService.error() && !voiceService.isProcessing()"
+             [class.border-red-500]="!!voiceService.error() && !voiceService.isListening()"
+             [class.hover:bg-gray-800]="!voiceService.isListening() && !ttsService.isSpeaking() && !voiceService.isProcessing()">
+             
+             @if (voiceService.isProcessing()) {
+                <!-- Processing Icon -->
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-white animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+             } @else if (voiceService.isListening()) {
+                <!-- Stop Icon -->
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-white animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <rect x="6" y="6" width="12" height="12" fill="currentColor" />
+                </svg>
+             } @else if (ttsService.isSpeaking()) {
+                <!-- Speaking / Waveform Icon -->
+                <div class="flex gap-1 items-center h-4">
+                  <div class="w-1 bg-cyan-200 animate-[bounce_1s_infinite] h-2"></div>
+                  <div class="w-1 bg-cyan-200 animate-[bounce_1.2s_infinite] h-4"></div>
+                  <div class="w-1 bg-cyan-200 animate-[bounce_0.8s_infinite] h-3"></div>
+                  <div class="w-1 bg-cyan-200 animate-[bounce_1.1s_infinite] h-2"></div>
+                </div>
+             } @else {
+                <!-- Mic Icon -->
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                </svg>
+             }
+        </div>
+        
+        <span class="absolute -bottom-10 left-1/2 transform -translate-x-1/2 text-xs font-bold uppercase tracking-wider text-white whitespace-nowrap opacity-80 transition-all duration-300"
+              [class.text-red-400]="voiceService.isListening()"
+              [class.text-amber-400]="voiceService.isProcessing()"
+              [class.text-cyan-400]="ttsService.isSpeaking()"
+              [class.text-red-500]="!!voiceService.error()">
+          @if (voiceService.error()) {
+             Error
+          } @else if (voiceService.isProcessing()) {
+            Processing...
+          } @else if (!isActive()) {
+            Tap to Wake
+          } @else if (voiceService.isListening()) {
+            Tap to Send
+          } @else if (ttsService.isSpeaking()) {
+            Speaking...
+          } @else {
+            Tap to Ask
+          }
+        </span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Right Side: Intelligence Panel -->
+  <div class="hidden lg:flex flex-col w-1/3 h-full border-l border-gray-800 bg-gray-950/90 backdrop-blur-sm z-20">
+    
+    <!-- Header -->
+    <div class="p-6 border-b border-gray-800 flex justify-between items-center">
+      <div>
+        <h1 class="text-xl font-bold text-white tracking-tight">Recall Aid <span class="text-purple-500">v3.0</span></h1>
+        <p class="text-xs text-gray-500 mt-1">Cognitive Prosthetic System</p>
+      </div>
+      <button (click)="toggleSystem()" 
+              class="px-4 py-2 rounded-full font-medium text-sm transition-all duration-300"
+              [class.bg-emerald-600]="!isActive()"
+              [class.text-white]="!isActive()"
+              [class.hover-bg-emerald-500]="!isActive()"
+              [class.bg-red-900]="isActive()"
+              [class.text-red-200]="isActive()"
+              [class.hover-bg-red-800]="isActive()">
+        {{ isActive() ? 'DEACTIVATE' : 'ACTIVATE' }}
+      </button>
+    </div>
+
+    <!-- Life Log Context Viewer -->
+    <div class="p-6 border-b border-gray-800 bg-gray-900/50">
+      <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+        Active Life Log (Cached)
+      </h3>
+      <div class="text-xs text-gray-300 space-y-2 font-mono">
+        <div class="flex justify-between">
+          <span class="text-gray-500">User:</span>
+          <span>{{ getLifeLogPreview().user_profile.name }}</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-500">Condition:</span>
+          <span>{{ getLifeLogPreview().user_profile.condition }}</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-500">Next Task:</span>
+          <span class="text-emerald-400">{{ getLifeLogPreview().daily_routine[0].task }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Real-time Logs -->
+    <div class="flex-1 overflow-y-auto p-6 space-y-4">
+      <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider sticky top-0 bg-gray-950 pb-2">System Stream</h3>
+      
+      @for (log of logs(); track log) {
+        <div class="flex gap-3 text-sm animate-fade-in">
+          <span class="text-gray-600 text-xs shrink-0 pt-1">{{ log.time }}</span>
+          <div class="flex-1">
+             @if (log.type === 'reasoner') {
+               <span class="text-purple-400 font-bold text-xs uppercase block mb-1">Reasoner</span>
+               <p class="text-purple-100">{{ log.message }}</p>
+             } @else if (log.type === 'observer') {
+               <span class="text-emerald-600 font-bold text-xs uppercase block mb-1">Observer</span>
+               <p class="text-gray-300">{{ log.message }}</p>
+             } @else if (log.type === 'voice') {
+               <span class="text-blue-400 font-bold text-xs uppercase block mb-1">Voice Input</span>
+               <p class="text-white italic">"{{ log.message }}"</p>
+             } @else {
+               <span class="text-gray-500 font-bold text-xs uppercase block mb-1">System</span>
+               <p class="text-gray-400 italic">{{ log.message }}</p>
+             }
+          </div>
+        </div>
+      } @empty {
+        <div class="text-center text-gray-600 italic text-sm py-10">
+          System idle. Waiting for activation...
+        </div>
+      }
+    </div>
+  </div>
+  
+  <!-- Mobile Toggle for Info Panel (visible only on small screens) -->
+  <div class="lg:hidden absolute top-4 right-4 z-30">
+    <button (click)="toggleSystem()" class="bg-gray-800 text-white p-2 rounded-full shadow-lg">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    </button>
+  </div>
+
+</div>
+
+<style>
+  .animate-fade-in {
+    animation: fadeIn 0.3s ease-out forwards;
+  }
+  .animate-fade-in-up {
+    animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-5px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translate(-50%, 20px); }
+    to { opacity: 1; transform: translate(-50%, 0); }
+  }
+</style>
