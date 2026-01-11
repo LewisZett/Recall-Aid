@@ -7,20 +7,26 @@ export class TtsService {
   private synth: SpeechSynthesis | null = null;
   private voice: SpeechSynthesisVoice | null = null;
   
-  // Public state signal for UI
+  // Public state signals for UI
   isSpeaking = signal(false);
+  speechRate = signal(0.9); // Default slow/gentle
+  speechPitch = signal(1.1); // Default slightly higher
 
   constructor() {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      this.synth = window.speechSynthesis;
-      this.initVoice();
+    if (typeof window !== 'undefined') {
+      const win = window as any;
+      // Try standard API then webkit prefix
+      this.synth = win.speechSynthesis || win.webkitSpeechSynthesis;
       
-      // Handle async voice loading
       if (this.synth) {
-        this.synth.onvoiceschanged = () => this.initVoice();
+        this.initVoice();
+        // Handle async voice loading
+        if (this.synth.onvoiceschanged !== undefined) {
+           this.synth.onvoiceschanged = () => this.initVoice();
+        }
+      } else {
+        console.warn('Text-to-Speech API is not available in this environment.');
       }
-    } else {
-      console.warn('Text-to-Speech API is not available in this environment.');
     }
   }
 
@@ -47,8 +53,8 @@ export class TtsService {
     if (this.voice) {
       utterance.voice = this.voice;
     }
-    utterance.rate = 0.9; // Slightly slower for clarity
-    utterance.pitch = 1.1; // Slightly higher/gentler
+    utterance.rate = this.speechRate(); 
+    utterance.pitch = this.speechPitch();
     
     // Track state
     utterance.onstart = () => this.isSpeaking.set(true);

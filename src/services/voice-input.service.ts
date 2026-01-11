@@ -6,16 +6,20 @@ interface IWindow extends Window {
   SpeechRecognition: any;
 }
 
-export type SystemCommand = 'ACTIVATE' | 'DEACTIVATE' | 'PAUSE' | 'RESUME' | null;
+export type SystemCommand = 'ACTIVATE' | 'DEACTIVATE' | 'PAUSE' | 'RESUME' | 'EMERGENCY' | 'QUERY' | null;
 
 @Injectable({
   providedIn: 'root'
 })
 export class VoiceInputService {
   isListening = signal(false);
-  isProcessing = signal(false); // Indicates waiting for final result after stop
+  isProcessing = signal(false); 
   transcript = signal<string>('');
   error = signal<string | null>(null);
+
+  // New State for Wake Word
+  isWakeWordDetected = signal(false);
+  readonly WAKE_WORDS = ['hey assist', 'assist', 'hey assistant', 'okay assist'];
 
   private recognition: any;
   private processingTimeout: any;
@@ -36,9 +40,9 @@ export class VoiceInputService {
     if (!Recognition) return null;
 
     const recognition = new Recognition();
-    recognition.continuous = false;
+    recognition.continuous = true; // Use continuous to listen for wake word
     recognition.lang = 'en-US';
-    recognition.interimResults = false; // We only want final results
+    recognition.interimResults = false;
     recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
@@ -51,38 +55,60 @@ export class VoiceInputService {
 
     recognition.onend = () => {
       console.log('Voice: Recognition ended');
-      // If we were processing, this is the natural end of that state
-      this.resetState();
+      // Auto-restart if we were just listening for wake words and it timed out
+      if (this.isListening()) {
+        try {
+           this.recognition.start();
+        } catch(e) {
+           this.resetState();
+        }
+      } else {
+        this.resetState();
+      }
     };
 
     recognition.onerror = (event: any) => {
+      if (event.error === 'aborted') {
+        this.resetState();
+        return;
+      }
       console.error('Voice: Error', event.error);
       this.resetState();
-      
       let msg = '';
       switch (event.error) {
-        case 'no-speech':
-          // User tapped send but didn't say anything, or silence.
-          // Not a critical error, but good to know.
-          console.warn('Voice: No speech detected');
-          return; 
+        case 'no-speech': return; 
         case 'audio-capture': msg = 'No microphone found.'; break;
         case 'not-allowed': msg = 'Microphone blocked.'; break;
         case 'network': msg = 'Network error.'; break;
-        case 'aborted': return; // Expected when aborting
         default: msg = `Voice Error: ${event.error}`;
       }
-      
       if (msg) this.error.set(msg);
     };
 
     recognition.onresult = (event: any) => {
-      console.log('Voice: Result received');
       if (event.results && event.results.length > 0) {
-        const result = event.results[0][0];
-        if (result && result.transcript) {
-          console.log('Voice: Transcript:', result.transcript);
-          this.transcript.set(result.transcript);
+        // Get the latest result
+        const latestResult = event.results[event.results.length - 1];
+        if (latestResult.isFinal) {
+           const text = latestResult[0].transcript.toLowerCase().trim();
+           console.log('Voice Raw:', text);
+           
+           if (this.checkForWakeWord(text)) {
+              // Strip wake word and set final transcript
+              const cleanedText = this.stripWakeWord(text);
+              if (cleanedText) {
+                this.transcript.set(cleanedText);
+                // Stop to process
+                this.stop(); 
+              } else {
+                 // Detected wake word but no command yet?
+                 this.isWakeWordDetected.set(true);
+              }
+           } else if (this.isWakeWordDetected()) {
+             // If wake word was recently triggered, accept this
+             this.transcript.set(text);
+             this.stop();
+           }
         }
       }
     };
@@ -91,8 +117,7 @@ export class VoiceInputService {
   }
 
   start() {
-    this.stopInternal(); // Cleanup any old instances
-
+    this.stopInternal(); 
     this.recognition = this.createRecognitionInstance();
     
     if (this.recognition) {
@@ -100,6 +125,7 @@ export class VoiceInputService {
         this.transcript.set(''); 
         this.error.set(null); 
         this.isProcessing.set(false);
+        this.isWakeWordDetected.set(false);
         this.recognition.start();
       } catch (e) {
         console.error('Mic start error', e);
@@ -111,29 +137,20 @@ export class VoiceInputService {
 
   stop() {
     if (this.recognition && this.isListening()) {
-      console.log('Voice: Stopping manually...');
-      this.isProcessing.set(true); // Show spinner
-      
+      this.isProcessing.set(true);
       try {
         this.recognition.stop();
-        
-        // WATCHDOG: If the browser doesn't fire 'onend' or 'onresult' within 2.5s, 
-        // force reset. This prevents the "Endless Processing" loop.
         this.processingTimeout = setTimeout(() => {
           if (this.isProcessing()) {
-            console.warn('Voice: Watchdog triggered - forced reset.');
             this.resetState();
           }
         }, 2500);
-
       } catch (e) {
-        console.warn('Error stopping recognition', e);
         this.resetState();
       }
     }
   }
 
-  // Force hard reset of all states and instances
   private stopInternal() {
     this.clearProcessingTimeout();
     if (this.recognition) {
@@ -157,12 +174,42 @@ export class VoiceInputService {
     }
   }
 
-  parseCommand(text: string): SystemCommand {
-    const cmd = text.toLowerCase().trim();
+  private checkForWakeWord(text: string): boolean {
+    return this.WAKE_WORDS.some(w => text.includes(w));
+  }
+
+  private stripWakeWord(text: string): string {
+    let result = text;
+    this.WAKE_WORDS.forEach(w => {
+       result = result.replace(w, '');
+    });
+    return result.trim();
+  }
+
+  /**
+   * Parses text for commands and handles chaining (AND, THEN).
+   */
+  parseCommands(text: string): { command: SystemCommand, text: string }[] {
+    const rawSegments = text.split(/\s+(?:and|then|also)\s+/i);
+    
+    return rawSegments.map(segment => {
+      const cleanSeg = segment.trim();
+      return {
+        command: this.identifyCommandType(cleanSeg),
+        text: cleanSeg
+      };
+    });
+  }
+
+  private identifyCommandType(text: string): SystemCommand {
+    const cmd = text.toLowerCase();
+    if (cmd.includes('help') || cmd.includes('emergency') || cmd.includes('911') || cmd.includes('i need help')) return 'EMERGENCY';
     if (cmd.includes('activate') || cmd.includes('start system') || cmd.includes('wake up')) return 'ACTIVATE';
-    if (cmd.includes('deactivate') || cmd.includes('stop system') || cmd.includes('shut down') || cmd.includes('sleep')) return 'DEACTIVATE';
-    if (cmd.includes('pause observation') || cmd.includes('stop watching') || cmd.includes('hold on') || cmd.includes('pause')) return 'PAUSE';
-    if (cmd.includes('resume') || cmd.includes('start watching')) return 'RESUME';
-    return null;
+    if (cmd.includes('deactivate') || cmd.includes('stop system') || cmd.includes('shut down')) return 'DEACTIVATE';
+    if (cmd.includes('pause')) return 'PAUSE';
+    if (cmd.includes('resume')) return 'RESUME';
+    
+    // If no system keyword, it's a general query/observation request
+    return 'QUERY'; 
   }
 }
